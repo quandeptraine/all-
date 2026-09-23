@@ -17,7 +17,7 @@ jobs:
         uses: actions/checkout@v4
 
       # =====================================================
-      # PREPARE PROJECT
+      # PREPARE
       # =====================================================
 
       - name: Prepare FarmViet
@@ -36,7 +36,7 @@ jobs:
           mkdir -p "FarmViet"
 
           # -------------------------------------------------
-          # Swift source
+          # Swift
           # -------------------------------------------------
 
           cp -f "FarmVietApp.swift" "FarmViet/"
@@ -44,171 +44,265 @@ jobs:
           cp -f "GameScene.swift" "FarmViet/"
           cp -f "Info.plist" "FarmViet/"
 
-          echo "Swift source OK"
+          echo "Swift source copied"
 
           # =================================================
-          # CREATE RESOURCE DIRECTORIES
-          # =================================================
-
-          mkdir -p "FarmViet/Resources/FarmExpansion/Farming101_Free"
-          mkdir -p "FarmViet/Resources/FarmExpansion/SuperRetroRanch_FreeTier"
-          mkdir -p "FarmViet/Resources/FarmExpansion/OtherFreeVersion"
-
-          # =================================================
-          # COPY EXISTING RESOURCES IF THEY EXIST
-          # =================================================
-
-          if [ -d "Resources" ]; then
-            echo "Existing Resources found"
-            cp -R "Resources/." "FarmViet/Resources/"
-          fi
-
-          if [ -d "Assets" ]; then
-            echo "Existing Assets found"
-            mkdir -p "FarmViet/Assets"
-            cp -R "Assets/." "FarmViet/Assets/"
-          fi
-
-          # =================================================
-          # ROOT ASSETS -> RESOURCE FOLDERS
+          # COPY EVERY RESOURCE REFERENCED BY PBXPROJ
           # =================================================
 
           echo ""
           echo "========================================"
-          echo "REBUILDING FARM EXPANSION"
+          echo "RESOLVING XCODE ASSETS"
           echo "========================================"
 
           python3 <<'PY'
           import os
+          import re
           import shutil
 
-          root = "."
-          base = "FarmViet/Resources/FarmExpansion"
+          project = "FarmViet.xcodeproj/project.pbxproj"
+          destination_root = "FarmViet"
 
-          farming = os.path.join(
-              base,
-              "Farming101_Free"
-          )
+          with open(
+              project,
+              "r",
+              encoding="utf-8",
+              errors="ignore"
+          ) as f:
+              text = f.read()
 
-          superretro = os.path.join(
-              base,
-              "SuperRetroRanch_FreeTier"
-          )
+          # -------------------------------------------------
+          # Find all resource paths/names referenced by Xcode
+          # -------------------------------------------------
 
-          other = os.path.join(
-              base,
-              "OtherFreeVersion"
-          )
+          references = set()
 
-          os.makedirs(farming, exist_ok=True)
-          os.makedirs(superretro, exist_ok=True)
-          os.makedirs(other, exist_ok=True)
+          patterns = [
+              r'path\s*=\s*([^;]+);',
+              r'name\s*=\s*([^;]+);',
+              r'([A-Za-z0-9_./ -]+\.(?:png|jpg|jpeg|gif|wav|mp3|m4a))'
+          ]
 
-          farming_prefixes = (
-              "F101_",
-          )
+          for pattern in patterns:
 
-          super_prefixes = (
-              "SRR_",
-          )
+              for value in re.findall(
+                  pattern,
+                  text,
+                  flags=re.IGNORECASE
+              ):
 
-          copied = 0
+                  value = value.strip().strip('"')
+                  value = value.replace("\\", "/")
 
-          for name in os.listdir(root):
+                  filename = os.path.basename(value)
 
-              path = os.path.join(root, name)
-
-              if not os.path.isfile(path):
-                  continue
-
-              lower = name.lower()
-
-              # ---------------------------------------------
-              # Farming 101
-              # ---------------------------------------------
-
-              if name.startswith(farming_prefixes):
-
-                  target = os.path.join(
-                      farming,
-                      name
-                  )
-
-                  shutil.copy2(
-                      path,
-                      target
-                  )
-
-                  print(
-                      "Farming101:",
-                      name
-                  )
-
-                  copied += 1
-
-              # ---------------------------------------------
-              # Super Retro Ranch
-              # ---------------------------------------------
-
-              elif name.startswith(super_prefixes):
-
-                  # Never copy premium preview assets.
-                  if "premium" in lower:
-                      print(
-                          "SKIP PREMIUM:",
-                          name
-                      )
+                  if not filename:
                       continue
 
-                  target = os.path.join(
-                      superretro,
-                      name
+                  ext = os.path.splitext(
+                      filename
+                  )[1].lower()
+
+                  if ext in {
+                      ".png",
+                      ".jpg",
+                      ".jpeg",
+                      ".gif",
+                      ".wav",
+                      ".mp3",
+                      ".m4a"
+                  }:
+                      references.add(value)
+
+          print(
+              "Xcode resource references:",
+              len(references)
+          )
+
+          # -------------------------------------------------
+          # Build complete repo file index
+          # -------------------------------------------------
+
+          repo_files = []
+
+          for root, dirs, files in os.walk("."):
+
+              # Ignore git/build/generated folders
+              dirs[:] = [
+                  d for d in dirs
+                  if d not in {
+                      ".git",
+                      "FarmViet",
+                      "build",
+                      "DerivedData"
+                  }
+              ]
+
+              for filename in files:
+
+                  path = os.path.join(
+                      root,
+                      filename
                   )
 
-                  shutil.copy2(
-                      path,
-                      target
+                  repo_files.append(path)
+
+          print(
+              "Repository files indexed:",
+              len(repo_files)
+          )
+
+          # -------------------------------------------------
+          # Lookup by basename
+          # -------------------------------------------------
+
+          by_name = {}
+
+          for path in repo_files:
+
+              filename = os.path.basename(path)
+
+              by_name.setdefault(
+                  filename.lower(),
+                  []
+              ).append(path)
+
+          copied = 0
+          missing = []
+
+          # -------------------------------------------------
+          # Copy every referenced resource
+          # -------------------------------------------------
+
+          for reference in sorted(references):
+
+              reference = reference.replace(
+                  "\\",
+                  "/"
+              )
+
+              filename = os.path.basename(
+                  reference
+              )
+
+              # Don't process system/project files
+              if filename in {
+                  "Info.plist"
+              }:
+                  continue
+
+              matches = by_name.get(
+                  filename.lower(),
+                  []
+              )
+
+              if not matches:
+
+                  # Try normalized comparison
+                  normalized = re.sub(
+                      r"[^a-z0-9]",
+                      "",
+                      filename.lower()
                   )
 
-                  print(
-                      "SuperRetroRanch:",
-                      name
+                  for candidate in repo_files:
+
+                      candidate_name = os.path.basename(
+                          candidate
+                      )
+
+                      candidate_normalized = re.sub(
+                          r"[^a-z0-9]",
+                          "",
+                          candidate_name.lower()
+                      )
+
+                      if candidate_normalized == normalized:
+
+                          matches.append(
+                              candidate
+                          )
+
+              if not matches:
+
+                  missing.append(
+                      reference
                   )
 
-                  copied += 1
+                  continue
 
-              # ---------------------------------------------
-              # Free version
-              # ---------------------------------------------
+              source = matches[0]
 
-              elif name == "FREE_free.png":
+              # Preserve the exact path requested
+              # by the Xcode project.
+              target = os.path.join(
+                  destination_root,
+                  reference
+              )
 
-                  target = os.path.join(
-                      other,
-                      name
-                  )
+              os.makedirs(
+                  os.path.dirname(target),
+                  exist_ok=True
+              )
 
-                  shutil.copy2(
-                      path,
-                      target
-                  )
+              shutil.copy2(
+                  source,
+                  target
+              )
 
-                  print(
-                      "OtherFreeVersion:",
-                      name
-                  )
+              print(
+                  "COPIED:",
+                  reference
+              )
 
-                  copied += 1
+              print(
+                  "   FROM:",
+                  source
+              )
+
+              copied += 1
 
           print("")
           print(
-              "Expansion assets reconstructed:",
+              "Resources copied:",
               copied
           )
+
+          print(
+              "Resources missing:",
+              len(missing)
+          )
+
+          if missing:
+
+              print("")
+              print(
+                  "========================================"
+              )
+
+              print(
+                  "MISSING XCODE RESOURCES"
+              )
+
+              print(
+                  "========================================"
+              )
+
+              for item in missing:
+                  print(
+                      "MISSING:",
+                      item
+                  )
+
+              print("")
+
+              # Don't fail yet.
+              # Some references may be aliases generated below.
+
           PY
 
           # =================================================
-          # COPY ORIGINAL FARM PIXEL ASSETS
+          # ROOT ASSETS
           # =================================================
 
           python3 <<'PY'
@@ -227,11 +321,6 @@ jobs:
               ".m4a"
           }
 
-          special_prefixes = (
-              "F101_",
-              "SRR_"
-          )
-
           for name in os.listdir("."):
 
               path = os.path.join(".", name)
@@ -239,16 +328,7 @@ jobs:
               if not os.path.isfile(path):
                   continue
 
-              ext = os.path.splitext(name)[1].lower()
-
-              if ext not in extensions:
-                  continue
-
-              # Expansion assets go into their proper folders.
-              if name.startswith(special_prefixes):
-                  continue
-
-              if name == "FREE_free.png":
+              if os.path.splitext(name)[1].lower() not in extensions:
                   continue
 
               target = os.path.join(
@@ -256,41 +336,59 @@ jobs:
                   name
               )
 
-              shutil.copy2(
-                  path,
-                  target
-              )
+              if not os.path.exists(target):
 
-              print(
-                  "Farm asset:",
-                  name
-              )
+                  shutil.copy2(
+                      path,
+                      target
+                  )
+
+                  print(
+                      "ROOT ASSET:",
+                      name
+                  )
+
           PY
 
           # =================================================
-          # WATER / PIER ALIASES
+          # KNOWN ALIASES
           # =================================================
 
+          echo ""
+          echo "========================================"
+          echo "KNOWN ALIASES"
+          echo "========================================"
+
           if [ ! -f "FarmViet/WaterTile.png" ]; then
+
             if [ -f "FarmViet/Water.png" ]; then
+
               cp -f \
                 "FarmViet/Water.png" \
                 "FarmViet/WaterTile.png"
+
               echo "Created WaterTile.png"
+
             fi
+
           fi
 
           if [ ! -f "FarmViet/PierTile.png" ]; then
+
             if [ -f "FarmViet/Pier_Tiles.png" ]; then
+
               cp -f \
                 "FarmViet/Pier_Tiles.png" \
                 "FarmViet/PierTile.png"
+
               echo "Created PierTile.png"
+
             fi
+
           fi
 
           # =================================================
-          # FISHERMAN FRAME ALIASES
+          # FISHERMAN ALIASES
           # =================================================
 
           python3 <<'PY'
@@ -332,54 +430,58 @@ jobs:
                       )
 
                       print(
-                          "Frame alias:",
+                          "FRAME:",
                           os.path.basename(target)
                       )
+
           PY
 
           # =================================================
-          # VERIFY EXPANSION
+          # FINAL CHECK
           # =================================================
 
           echo ""
           echo "========================================"
-          echo "FARM EXPANSION CHECK"
+          echo "CHECK FARM EXPANSION"
           echo "========================================"
 
-          test -d \
-            "FarmViet/Resources/FarmExpansion"
+          if [ -d "FarmViet/Resources/FarmExpansion" ]; then
 
-          test -d \
-            "FarmViet/Resources/FarmExpansion/Farming101_Free"
+            find \
+              "FarmViet/Resources/FarmExpansion" \
+              -type f \
+              | sort \
+              | head -500
 
-          test -d \
-            "FarmViet/Resources/FarmExpansion/SuperRetroRanch_FreeTier"
+          else
 
-          echo ""
-          echo "Farming 101:"
-          find \
-            "FarmViet/Resources/FarmExpansion/Farming101_Free" \
-            -type f \
-            | sort
+            echo "WARNING: FarmExpansion directory missing"
 
-          echo ""
-          echo "SuperRetroRanch:"
-          find \
-            "FarmViet/Resources/FarmExpansion/SuperRetroRanch_FreeTier" \
-            -type f \
-            | sort
-
-          echo ""
-          echo "Other free:"
-          find \
-            "FarmViet/Resources/FarmExpansion/OtherFreeVersion" \
-            -type f \
-            | sort
+          fi
 
           echo ""
           echo "========================================"
+          echo "CHECK SPECIFIC SRR FILES"
+          echo "========================================"
+
+          find \
+            "FarmViet" \
+            -type f \
+            -name "SRR_wheat*" \
+            -print \
+            | sort \
+            || true
+
+          find \
+            "FarmViet" \
+            -type f \
+            -name "SRR_tree*" \
+            -print \
+            | sort \
+            || true
+
+          echo ""
           echo "PREPARE COMPLETE"
-          echo "========================================"
 
       # =====================================================
       # XCODE
@@ -400,7 +502,7 @@ jobs:
             --show-sdk-path
 
       # =====================================================
-      # INSPECT PROJECT
+      # PROJECT
       # =====================================================
 
       - name: Inspect Xcode project
@@ -447,7 +549,7 @@ jobs:
             2>&1 | tee "build/xcodebuild.log"
 
       # =====================================================
-      # ERROR LOG
+      # ERRORS
       # =====================================================
 
       - name: Show build errors
@@ -476,7 +578,7 @@ jobs:
           fi
 
       # =====================================================
-      # FIND APP
+      # APP
       # =====================================================
 
       - name: Find FarmViet app
@@ -491,15 +593,18 @@ jobs:
             | head -n 1)
 
           if [ -z "$APP" ]; then
+
             echo "ERROR: FarmViet.app not found"
+
             exit 1
+
           fi
 
           echo "APP FOUND:"
           echo "$APP"
 
       # =====================================================
-      # CREATE IPA
+      # IPA
       # =====================================================
 
       - name: Create unsigned IPA
@@ -514,8 +619,11 @@ jobs:
             | head -n 1)
 
           if [ -z "$APP" ]; then
+
             echo "ERROR: FarmViet.app not found"
+
             exit 1
+
           fi
 
           rm -rf "build/Payload"
@@ -532,16 +640,11 @@ jobs:
             "FarmViet-V13-unsigned.ipa" \
             "Payload"
 
-          echo ""
-          echo "========================================"
-          echo "IPA CREATED"
-          echo "========================================"
-
           ls -lh \
             "FarmViet-V13-unsigned.ipa"
 
       # =====================================================
-      # UPLOAD IPA
+      # ARTIFACT
       # =====================================================
 
       - name: Upload unsigned IPA
@@ -550,10 +653,6 @@ jobs:
           name: FarmViet-V13-unsigned-IPA
           path: build/FarmViet-V13-unsigned.ipa
           if-no-files-found: error
-
-      # =====================================================
-      # UPLOAD LOG
-      # =====================================================
 
       - name: Upload build log
         if: always()
