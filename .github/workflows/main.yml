@@ -1,0 +1,164 @@
+name: Build Farm Viet V13 iOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-ios:
+    name: Build unsigned IPA
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Prepare FarmViet
+        shell: bash
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "PREPARING FARMVIET V13"
+          echo "========================================"
+
+          test -d "FarmViet.xcodeproj"
+          test -f "FarmViet.xcodeproj/project.pbxproj"
+
+          rm -rf "FarmViet"
+          mkdir -p "FarmViet"
+
+          cp -f "FarmVietApp.swift" "FarmViet/"
+          cp -f "FarmView.swift" "FarmViet/"
+          cp -f "GameScene.swift" "FarmViet/"
+          cp -f "Info.plist" "FarmViet/"
+
+          python3 <<'PY'
+          import os
+          import shutil
+
+          destination = "FarmViet"
+          extensions = {".png", ".jpg", ".jpeg", ".gif", ".wav", ".mp3", ".m4a"}
+
+          for name in os.listdir("."):
+              path = os.path.join(".", name)
+              if os.path.isfile(path) and os.path.splitext(name)[1].lower() in extensions:
+                  shutil.copy2(path, os.path.join(destination, name))
+                  print("ROOT ASSET:", name)
+          PY
+
+          if [ -d "Resources" ]; then
+            cp -R "Resources" "FarmViet/"
+            echo "Copied Resources/"
+          fi
+
+          if [ -d "Assets" ]; then
+            cp -R "Assets" "FarmViet/"
+            echo "Copied Assets/"
+          fi
+
+          if [ ! -f "FarmViet/WaterTile.png" ] && [ -f "FarmViet/Water.png" ]; then
+            cp -f "FarmViet/Water.png" "FarmViet/WaterTile.png"
+          fi
+
+          if [ ! -f "FarmViet/PierTile.png" ] && [ -f "FarmViet/Pier_Tiles.png" ]; then
+            cp -f "FarmViet/Pier_Tiles.png" "FarmViet/PierTile.png"
+          fi
+
+          for BASE in Fisherman_idle Fisherman_walk Fisherman_row Fisherman_fish Fisherman_hook
+          do
+            if [ -f "FarmViet/${BASE}.png" ]; then
+              for N in 0 1 2 3 4 5
+              do
+                if [ ! -f "FarmViet/${BASE}_${N}.png" ]; then
+                  cp -f "FarmViet/${BASE}.png" "FarmViet/${BASE}_${N}.png"
+                fi
+              done
+            fi
+          done
+
+          echo ""
+          echo "V13 asset folders:"
+          find "FarmViet/Resources/FarmExpansion" -maxdepth 2 -type f 2>/dev/null | sort || true
+
+          echo ""
+          echo "PREPARE COMPLETE"
+
+      - name: Select Xcode
+        shell: bash
+        run: |
+          set -e
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+
+      - name: Inspect project
+        shell: bash
+        run: |
+          set -e
+          xcodebuild -project "FarmViet.xcodeproj" -list
+
+      - name: Build Farm Viet
+        shell: bash
+        run: |
+          set -o pipefail
+
+          rm -rf "build"
+          mkdir -p "build"
+
+          xcodebuild -project "FarmViet.xcodeproj" -scheme "FarmViet" -configuration "Release" -sdk "iphoneos" -derivedDataPath "build/DerivedData" SDKROOT=iphoneos SUPPORTED_PLATFORMS=iphoneos TARGETED_DEVICE_FAMILY="1,2" IPHONEOS_DEPLOYMENT_TARGET=16.0 SUPPORTS_MACCATALYST=NO CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" clean build 2>&1 | tee "build/xcodebuild.log"
+
+      - name: Show build errors
+        if: failure()
+        shell: bash
+        run: |
+          echo "========================================"
+          echo "BUILD ERRORS"
+          echo "========================================"
+
+          if [ -f "build/xcodebuild.log" ]; then
+            grep -n -E "error:|fatal error|BUILD FAILED" "build/xcodebuild.log" || true
+            echo ""
+            echo "Last 250 lines:"
+            tail -n 250 "build/xcodebuild.log"
+          fi
+
+      - name: Create unsigned IPA
+        shell: bash
+        run: |
+          set -e
+
+          APP=$(find "build/DerivedData" -type d -name "FarmViet.app" | head -n 1)
+
+          if [ -z "$APP" ]; then
+            echo "FarmViet.app not found"
+            exit 1
+          fi
+
+          rm -rf "build/Payload"
+          mkdir -p "build/Payload"
+
+          cp -R "$APP" "build/Payload/FarmViet.app"
+
+          cd "build"
+          rm -f "FarmViet-V13-unsigned.ipa"
+          zip -r "FarmViet-V13-unsigned.ipa" "Payload"
+
+          ls -lh "FarmViet-V13-unsigned.ipa"
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: FarmViet-V13-unsigned-IPA
+          path: build/FarmViet-V13-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: FarmViet-V13-build-log
+          path: build/xcodebuild.log
+          if-no-files-found: ignore
